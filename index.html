@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Apni Vani - Breaking Barriers, Connecting Voices</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- Notification -->
+    <div class="notification" id="notification">
+        <span id="notificationText">Notification message</span>
+    </div>
+
+    <!-- Header -->
+    <header class="header">
+        <div class="container">
+            <nav class="nav">
+                <div class="logo">
+                    <img src="Logo.png" alt="Apni Vani Logo" class="logo-svg">
+                    <div>
+                        <div class="logo-text">APNI VANI</div>
+                        <span class="logo-tagline">Breaking Barriers, Connecting Voices</span>
+                    </div>
+                </div>
+                <ul class="nav-menu">
+                    <li><a href="#home" class="active">Home</a></li>
+                    <li><a href="#translation">Translation</a></li>
+                    <li><a href="#video">Video</a></li>
+                    <li><a href="#voice">Voice</a></li>
+                    <li><a href="#summarise">Summarise</a></li>
+                    <li><a href="#about">About</a></li>
+                </ul>
+            </nav>
+        </div>
+    </header>
+
+    <!-- Hero Section -->
+    <section class="hero" id="home">
+        <div class="container">
+            <div class="made-in-PCE"> MADE IN PCE</div>
+            <h1>Apni Vani – Breaking Barriers, Connecting Voices</h1>
+            <p>Collaboration, and unity in diversity. APNI VANI's Best AI translator features ensure that language is no longer a hurdle but a gateway to global interaction.</p>
+        </div>
+    </section>
+
+    <!-- Video Translation Section -->
+    <section class="video-section" id="video-translate">
+        <div class="container">
+            <h2 class="section-title">🎥 Video Translation Studio</h2>
+            <p class="section-subtitle">Upload your video and translate it to any language with AI-powered precision</p>
+            
+            <div class="upload-container">
+                <div class="upload-zone" id="uploadZone">
+                    <div class="upload-icon">📹</div>
+                    <div class="upload-text">
+                        <h3>Upload Your Video</h3>
+                        <p>Drag and drop your video file here, or click to browse</p>
+                        <p class="file-note">Supported formats: MP4, AVI, MOV, WMV (Max: 100MB)</p>
+                    </div>
+                    <button class="upload-btn" onclick="document.getElementById('fileInput').click()">Choose File</button>
+                    <input type="file" id="fileInput" class="file-input" accept="video/*">
+                </div>
+                
+                <div class="progress-bar" id="progressBar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                
+                <div class="file-info" id="fileInfo">
+                    <strong>File Selected:</strong> <span id="fileName"></span><br>
+                    <strong>Size:</strong> <span id="fileSize"></span>
+                </div>
+                
+                <div class="language-selector" id="languageSelector">
+                    <label><strong>From:</strong></label>
+                    <select id="fromLang">
+                        <option value="en">English</option>
+                        <option value="hi">Hindi</option>
+                        <option value="bn">Bengali</option>
+                        <option value="ta">Tamil</option>
+                        <option value="te">Telugu</option>
+                        <option value="ml">Malayalam</option>
+                        <option value="kn">Kannada</option>
+                        <option value="gu">Gujarati</option>
+                        <option value="mr">Marathi</option>
+                        <option value="pa">Punjabi</option>
+                    </select>
+                    
+                    <label><strong>To:</strong></label>
+                    <select id="toLang">
+                        <option value="hi">Hindi</option>
+                        <option value="en">English</option>
+                        <option value="bn">Bengali</option>
+                        <option value="ta">Tamil</option>
+                        <option value="te">Telugu</option>
+                        <option value="ml">Malayalam</option>
+                        <option value="kn">Kannada</option>
+                        <option value="gu">Gujarati</option>
+                        <option value="mr">Marathi</option>
+                        <option value="pa">Punjabi</option>
+                        <option value="es">Spanish</option>
+                        <option value="fr">French</option>
+                        <option value="de">German</option>
+                        <option value="ja">Japanese</option>
+                        <option value="ko">Korean</option>
+                        <option value="zh">Chinese</option>
+                        <option value="ar">Arabic</option>
+                    </select>
+                </div>
+                
+                <button class="translate-btn" id="translateBtn">🚀 Translate Video</button>
+            </div>
+        </div>
+    </section>
+
+    <!-- How to Use Section -->
+    <section class="services" style="background: rgba(255,255,255,0.1);">
+        <div class="container">
+            <h2 class="white-title"> How to Use Apni Vani</h2>
+            <div class="services-grid">
+                <div class="service-card"><h3>Step 1: Upload Video</h3><p>Click "Choose File" or drag & drop your video.</p></div>
+                <div class="service-card"><h3>Step 2: Select Languages</h3><p>Choose source and target languages.</p></div>
+                <div class="service-card"><h3>Step 3: Translate</h3><p>Press the 🚀 Translate button.</p></div>
+                <div class="service-card"><h3>Step 4: Download</h3><p>Click the download button after translation.</p></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Services Section -->
+    <section class="services">
+        <div class="container">
+            <h2 class="white-title">Our AI-Powered Services</h2>
+            <div class="services-grid">
+                <div class="service-card"><h3> Text & Document Translation</h3><p>Translate documents and books.</p></div>
+                <div class="service-card"><h3> Video Translation</h3><p>Convert videos with subtitles and dubbing.</p></div>
+                <div class="service-card"><h3> Voice Translation</h3><p>Real-time natural voice translation.</p></div>
+                <div class="service-card"><h3> Live Meeting Translation</h3><p>Break barriers in real-time meetings.</p></div>
+                <div class="service-card"><h3> Image Text Translation</h3><p>Extract & translate text from images.</p></div>
+                <div class="service-card"><h3> Summarise Tools</h3><p>AI summarization for long content.</p></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="social-links">
+                <a href="#">💼</a>
+                <a href="#">𝕏</a>
+                <a href="#">📘</a>
+                <a href="#">📸</a>
+            </div>
+            <p>© 2025 All rights reserved, Apni Vani, Team Build Bots ,Pillai college of Engineering</p>
+            <p>Privacy Policy | Terms of Use | Cookie Policy</p>
+        </div>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+</html>

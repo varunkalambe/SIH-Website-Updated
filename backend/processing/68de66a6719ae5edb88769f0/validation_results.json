@@ -1,0 +1,21 @@
+{
+  "overallScore": 88,
+  "segments": [],
+  "issues": [],
+  "recommendations": [],
+  "lengthCheck": {
+    "score": 100,
+    "issues": []
+  },
+  "terminologyCheck": {
+    "score": 85,
+    "issues": [],
+    "consistentTerms": [],
+    "inconsistentTerms": []
+  },
+  "backTranslationCheck": {
+    "score": 80,
+    "bleuScore": 0.75,
+    "semanticSimilarity": 0.82
+  }
+}
