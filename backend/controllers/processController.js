@@ -5,12 +5,12 @@ import ffmpeg from 'fluent-ffmpeg';
 import ffmpegStatic from 'ffmpeg-static';
 import fs from 'fs';
 import path from 'path';
-import { extractAudio, extractAudioForcedAlignment } from '../services/audioService.js';
-import { assembleVideoWithCaptions, assembleVideoWithAudioOnly, generateAccurateCaptions } from '../services/videoService.js';
+import { extractAudio, extractAudioForcedAlignment, alignTranslatedAudio } from '../services/audioService.js';
+import { assembleVideoWithCaptions, assembleVideoWithAudioOnly } from '../services/videoService.js';
 import { transcribeAudio } from '../services/transcriptionService.js';
 import { translateText } from '../services/translationService.js';
 import { generateTTS } from '../services/ttsService.js';
-import { generateCaptions } from '../services/captionService.js';
+import { generateCaptions, generateAccurateCaptions } from '../services/captionService.js';
 import { validateTranslationQuality } from '../services/validationService.js';
 
 
@@ -61,7 +61,9 @@ export const processVideo = async (jobId, options = {}) => {
 
     // ===== STEP 2: TRANSCRIBE AUDIO =====
     console.log(`[${jobId}] PIPELINE STEP 2/7: Transcribing Audio...`);
-    const transcription = await transcribeAudio(audioPath, jobId, { language: sourceLanguage });
+    const transcription = await transcribeAudio(audioPath, jobId, sourceLanguage, targetLanguage, { enhancement: true });
+
+    console.log(`[${jobId}] 🐛 DEBUG: Returned from transcribeAudio. Moving to Step 3.`);
 
     // ===== STEP 3: EXTRACT WORD ALIGNMENT (THE NEW WAY) =====
     console.log(`[${jobId}] PIPELINE STEP 3/7: Extracting Word-Level Alignment...`);
@@ -71,7 +73,25 @@ export const processVideo = async (jobId, options = {}) => {
 
     // ===== STEP 4: TRANSLATE TEXT =====
     console.log(`[${jobId}] PIPELINE STEP 4/7: Translating Text...`);
-    const translation = await translateText(jobId, sourceLanguage, targetLanguage, transcription.text);
+    const translation = await translateText(transcription.text, sourceLanguage, targetLanguage, jobId);
+
+
+    try {
+  const translationsDir = path.join('uploads', 'translations');
+  if (!fs.existsSync(translationsDir)) {
+    fs.mkdirSync(translationsDir, { recursive: true });
+  }
+  const translationPath = path.join(translationsDir, `${jobId}_translation.json`);
+  fs.writeFileSync(translationPath, JSON.stringify(translation, null, 2), 'utf8');
+  console.log(`[${jobId}] ✅ Translation data saved for resume capability: ${translationPath}`);
+} catch (saveError) {
+  console.warn(`[${jobId}] ⚠️ Could not save translation file for resume capability: ${saveError.message}`);
+}
+
+
+    console.log(`🐛 [${jobId}] DEBUG (processVideo): Translation object received. Language: ${translation?.language}, Text length: ${translation?.text?.length}`);
+    console.log(`🐛 [${jobId}] DEBUG (processVideo): Passing this to assembleVideoWithCaptions.`);
+
 
     console.log(`[${jobId}] 🐛 Translation result type:`, typeof translation);
     console.log(`[${jobId}] 🐛 Translation.text:`, translation?.text?.substring(0, 100));
@@ -88,30 +108,51 @@ export const processVideo = async (jobId, options = {}) => {
 
     await logProcessingStep(jobId, 'processing', 'tts_generation');
 
-    // ===== STEP 5: GENERATE TTS =====
-    console.log(`[${jobId}] PIPELINE STEP 5/7: Generating Speech...`);
-    await generateTTS(translation, jobId, { targetLanguage: targetLanguage });
 
-    await logProcessingStep(jobId, 'processing', 'video_assembly');
-    
-    // ===== STEP 6: ASSEMBLE FINAL VIDEO (Passing the data correctly) =====
-    console.log(`[${jobId}] PIPELINE STEP 6/7: Assembling Final Video...`);
-    const finalVideoResult = await assembleVideoWithCaptions(jobId, alignmentData); // Pass alignmentData here
-    const finalVideoPath = finalVideoResult.outputPath;
 
-    // ===== STEP 7: MARK JOB AS COMPLETED =====
-    console.log(`[${jobId}] PIPELINE STEP 7/7: Finalizing Job...`);
-    const endTime = new Date();
-    const processingDuration = endTime - startTime;
+//Varunnnnnnnnnnnnnnn
 
-    await logProcessingStep(jobId, 'completed', 'completed', { 
-        completed_at: endTime,
-        processing_duration_ms: processingDuration,
-        processed_file_path: finalVideoPath
-    });
+// ===== STEP 5: GENERATE TTS =====
+console.log(`[${jobId}] PIPELINE STEP 5/8: Generating Speech...`);
+// ✅ FIX: Capture the return value of generateTTS directly as a string.
+const translatedAudioPath = await generateTTS(translation, jobId, { targetLanguage: targetLanguage });
 
-    console.log(`[${jobId}] 🎉 PROCESSING COMPLETED SUCCESSFULLY!`);
-    
+// Add a validation check to ensure we got a valid path
+if (!translatedAudioPath || typeof translatedAudioPath !== 'string') {
+  throw new Error('generateTTS did not return a valid audio file path.');
+}
+
+await logProcessingStep(jobId, 'processing', 'aligning_translation');
+
+// ===== STEP 6: ALIGN TRANSLATED AUDIO (NEW STEP) =====
+console.log(`[${jobId}] PIPELINE STEP 6/8: Aligning Translated Speech...`);
+const translatedAlignmentData = await alignTranslatedAudio(translatedAudioPath, jobId, targetLanguage);
+
+await logProcessingStep(jobId, 'processing', 'video_assembly');
+
+// ===== STEP 7: ASSEMBLE FINAL VIDEO =====
+console.log(`[${jobId}] PIPELINE STEP 7/8: Assembling Final Video...`);
+// Pass the NEW translatedAlignmentData instead of the old one. We pass null for lipSyncData.
+if (!translation || !translation.text) {
+  throw new Error('Translation object missing required text field');
+}
+console.log(`[${jobId}] 🎬 Passing translation to video assembly (${translation.text.length} chars in ${translation.language})`);
+const finalVideoResult = await assembleVideoWithCaptions(jobId, translatedAlignmentData, translation, null);
+const finalVideoPath = finalVideoResult.outputPath;
+
+// ===== STEP 8: MARK JOB AS COMPLETED =====
+console.log(`[${jobId}] PIPELINE STEP 8/8: Finalizing Job...`);
+const endTime = new Date();
+const processingDuration = endTime - startTime;
+
+await logProcessingStep(jobId, 'completed', 'completed', { 
+    completed_at: endTime,
+    processing_duration_ms: processingDuration,
+    processed_file_path: finalVideoPath
+});
+
+console.log(`[${jobId}] 🎉 PROCESSING COMPLETED SUCCESSFULLY!`);
+
     // You can build and return a final success object if needed, but the core logic is complete.
     return { success: true, final_video_path: finalVideoPath };
 

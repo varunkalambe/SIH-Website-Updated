@@ -10,7 +10,7 @@ import { extractAudio, extractAudioForcedAlignment, replaceAudioInVideo } from '
 import { transcribeAudio } from './transcriptionService.js';
 import { translateText } from './translationService.js';
 import { generateTTS } from './ttsService.js';
-import { 
+import {
   detectAudioVideoSync,
   correctAudioSync,
   neuralAudioAlignment,
@@ -28,7 +28,8 @@ import {
 import { validateTranslationQuality } from './validationService.js';
 import lipSyncAnalyzer from './lipSyncAnalyzer.js';
 import { spawn } from 'child_process';
-
+import { generateAccurateCaptions } from './captionService.js';
+import { getConfig } from '../config/languageConfig.js';
 
 const escapeSubtitlePath = (windowsPath) => {
   return windowsPath
@@ -44,9 +45,19 @@ ffmpeg.setFfmpegPath(ffmpegStatic);
 // In videoService.js
 // Replace your entire existing 'assembleVideoWithCaptions' function with this complete version.
 
-export const assembleVideoWithCaptions = async (jobId, alignmentData = null, lipSyncData = null) => {
+export const assembleVideoWithCaptions = async (jobId, alignmentData, translation, lipSyncData = null) => {
+
+  console.log(`🐛 [${jobId}] DEBUG (assembleVideo): Function started. Translation object received:`, !!translation);
+
   return new Promise(async (resolve, reject) => {
     try {
+
+      // ✅ 1. ADD A QUICK VALIDATION FOR THE INCOMING TRANSLATION
+      if (!translation || !translation.text) {
+        throw new Error('A valid translation object was not provided to assembleVideoWithCaptions.');
+      }
+
+
       console.log(`[${jobId}] Starting enhanced video assembly with frame-level audio-video alignment and real-time sync...`);
 
       // ===== DISCOVER FILES WITH ADVANCED SEARCH =====
@@ -89,16 +100,18 @@ export const assembleVideoWithCaptions = async (jobId, alignmentData = null, lip
         // ... (Your existing lip sync analysis logic is fine here)
       }
 
-      // ===== STEP 2: VALIDATE PRE-GENERATED WORD ALIGNMENT (THE CORRECTED LOGIC) =====
+      // ===== STEP 2: VALIDATE PRE-GENERATED WORD ALIGNMENT (FINAL FIX) =====
       console.log(`[${jobId}] Step 2/8: Validating pre-generated word-level alignment...`);
-      if (!alignmentData || !alignmentData.forced_alignment_result || alignmentData.forced_alignment_result.phoneme_timings.length === 0) {
+      // ✅ FIX: Check for 'segments' instead of the old 'phoneme_timings' key.
+      if (!alignmentData || !alignmentData.forced_alignment_result || !alignmentData.forced_alignment_result.segments || alignmentData.forced_alignment_result.segments.length === 0) {
         throw new Error("Alignment data was not provided or is invalid. This indicates the alignment step in the main pipeline failed.");
       }
-      const phonemeAlignment = alignmentData.forced_alignment_result;
+      const wordLevelAlignment = alignmentData.forced_alignment_result; // Renamed for clarity
       const alignmentQuality = alignmentData.alignment_quality;
       console.log(`[${jobId}] ✅ Word-level alignment data is valid and available:`);
       console.log(`[${jobId}]   Quality: ${alignmentQuality}`);
-      console.log(`[${jobId}]   Word timings available: ${phonemeAlignment.phoneme_timings.length}`);
+      // ✅ FIX: Log the length of the 'segments' array.
+      console.log(`[${jobId}]   Word timings available for ${wordLevelAlignment.segments.length} segments.`);
 
       // ===== STEP 3: FRAME-LEVEL DURATION VALIDATION =====
       console.log(`[${jobId}] Step 3/8: Frame-level duration validation with precision timing...`);
@@ -106,7 +119,7 @@ export const assembleVideoWithCaptions = async (jobId, alignmentData = null, lip
         originalVideoPath,
         translatedAudioPath,
         lipSyncReference,
-        phonemeAlignment,
+        wordLevelAlignment,
         jobId
       );
 
@@ -119,7 +132,7 @@ export const assembleVideoWithCaptions = async (jobId, alignmentData = null, lip
           originalVideoPath,
           frameLevelValidation,
           lipSyncReference,
-          phonemeAlignment,
+          wordLevelAlignment,
           jobId
         );
       }
@@ -130,7 +143,7 @@ export const assembleVideoWithCaptions = async (jobId, alignmentData = null, lip
         originalVideoPath,
         realTimeSyncedAudioPath,
         lipSyncReference,
-        phonemeAlignment,
+        wordLevelAlignment,
         jobId
       );
       let neuralCorrectedAudioPath = realTimeSyncedAudioPath;
@@ -150,76 +163,47 @@ export const assembleVideoWithCaptions = async (jobId, alignmentData = null, lip
         originalVideoPath,
         neuralCorrectedAudioPath,
         lipSyncReference,
-        phonemeAlignment,
+        wordLevelAlignment,
         jobId
       );
 
-// Step 6.5/8: Load translation data and generate accurate captions
-console.log(`[${jobId}] Step 6.5/8: Generating accurate captions with translated text...`);
+      // We now generate captions directly from the 'translation' parameter.
+      console.log(`[${jobId}] Step 6.5/8: Generating accurate captions...`);
+      let accurateCaptionPath = null;
+      try {
+        // ✅ FIX: Pass the correct data to the function.
+        // The segments are inside alignmentData.forced_alignment_result
+        // The language is inside translation.language
+        accurateCaptionPath = await generateAccurateCaptions(
+  alignmentData.forced_alignment_result, // translatedWordAlignment
+  translation,                            // translatedText ← ADD THIS LINE
+  jobId,
+  translation.language
+);
 
-let accurateCaptionPath = null;
+        console.log(`[${jobId}] ✅ Caption generation successful. Path: '${accurateCaptionPath}'`);
 
-try {
-    // ✅ FIX: Load translation from filesystem
-    const translationFile = `./uploads/translations/${jobId}_translation.json`;
-    let translation = null;
-    
-    if (fs.existsSync(translationFile)) {
-        const translationData = JSON.parse(fs.readFileSync(translationFile, 'utf8'));
-        translation = translationData.translation;
-        console.log(`[${jobId}] ✅ Translation loaded: ${translation.language}`);
-    } else {
-        console.warn(`[${jobId}] ⚠️ Translation file not found, checking alternate paths...`);
-        
-        // Try alternate paths
-        const alternatePaths = [
-            `./uploads/translation/${jobId}.json`,
-            `./uploads/translations/${jobId}.json`
-        ];
-        
-        for (const altPath of alternatePaths) {
-            if (fs.existsSync(altPath)) {
-                const data = JSON.parse(fs.readFileSync(altPath, 'utf8'));
-                translation = data.translation || data;
-                break;
-            }
-        }
-    }
-    
-    if (!translation) {
-        throw new Error('Translation data not found - cannot generate captions');
-    }
-    
-    accurateCaptionPath = await generateAccurateCaptions(
-        jobId, 
-        alignmentData, 
-        translation  // ✅ Now correctly passed
-    );
-    
-    if (accurateCaptionPath && fs.existsSync(accurateCaptionPath)) {
-        console.log(`[${jobId}] ✅ Captions ready in ${translation.language}: ${accurateCaptionPath}`);
-    } else {
-        console.log(`[${jobId}] ⚠️ Captions not available - continuing without them`);
-    }
-} catch (captionError) {
-    console.warn(`[${jobId}] ⚠️ Caption generation failed: ${captionError.message}`);
-    accurateCaptionPath = null;
-}
+      } catch (captionError) {
+        console.warn(`[${jobId}] ⚠️ Caption generation failed: ${captionError.message}`);
+        accurateCaptionPath = null;
+      }
+
 
 
       // ===== STEP 7: FRAME-PERFECT VIDEO ASSEMBLY WITH FIXED SUBTITLE EMBEDDING =====
       console.log(`[${jobId}] Step 7/8: Frame-perfect video assembly with embedded sync data...`);
       const hasCaptions = accurateCaptionPath && fs.existsSync(accurateCaptionPath);
-const assemblyResults = await performFramePerfectVideoAssemblyFixed(
-  originalVideoPath,
-  neuralCorrectedAudioPath,
-  accurateCaptionPath || null, // Pass null if captions not available
-  outputVideoPath,
-  frameLevelValidation,
-  neuralSyncResults,
-  lipSyncValidation,
-  jobId
-);
+      const assemblyResults = await performFramePerfectVideoAssemblyFixed(
+        originalVideoPath,
+        neuralCorrectedAudioPath,
+        accurateCaptionPath || null, // Pass null if captions not available
+        outputVideoPath,
+        frameLevelValidation,
+        neuralSyncResults,
+        lipSyncValidation,
+        jobId,
+        translation.language
+      );
       console.log(`[${jobId}] ✅ Frame-perfect assembly completed successfully`);
 
       // ===== STEP 8: COMPREHENSIVE FINAL VALIDATION =====
@@ -248,7 +232,7 @@ const assemblyResults = await performFramePerfectVideoAssemblyFixed(
           quality: lipSyncValidation.overallGrade
         },
         neuralSync: neuralSyncResults,
-        phonemeAlignment: phonemeAlignment,
+        wordLevelAlignment: wordLevelAlignment,
         frameLevelStats: frameLevelValidation,
         processingStats: {
           ...(assemblyResults?.stats || {}),
@@ -278,189 +262,77 @@ const assemblyResults = await performFramePerfectVideoAssemblyFixed(
 
 // ===== CAPTION GENERATION HELPERS =====
 
-export async function generateAccurateCaptions(jobId, alignmentData, translatedSegments) {
-    console.log(`[${jobId}] Generating captions from translated text...`);
-    
-    try {
-        // ✅ FIX: Use translatedSegments (translation data) instead of alignment word timings
-        if (!translatedSegments || !translatedSegments.text) {
-            console.warn(`[${jobId}] ⚠️ No translation data available`);
-            return null;
-        }
-        
-        const targetLanguage = translatedSegments.language || translatedSegments.targetLang || 'en';
-        const targetLanguageName = getLanguageName(targetLanguage);
-        
-        console.log(`[${jobId}] Caption language: ${targetLanguageName} (${targetLanguage})`);
-        
-        // ✅ Split translation text into sentences
-        const sentences = translatedSegments.text
-            .split(/[।.!?;|\u0964\u0965\u061F\u3002\u0589\u06D4\u2026]+/)
-            .map(s => s.trim())
-            .filter(s => s.length > 0);
-        
-        if (sentences.length === 0) {
-            sentences.push(translatedSegments.text.trim());
-        }
-        
-        console.log(`[${jobId}] Split into ${sentences.length} ${targetLanguageName} sentences`);
-        
-        // ✅ Calculate timing from alignment data
-        const totalDuration = alignmentData?.duration || 30;
-        const sentenceWordCounts = sentences.map(s => s.split(/\s+/).length);
-        const totalWords = sentenceWordCounts.reduce((sum, count) => sum + count, 0);
-        
-        // ✅ Create timed segments with proportional timing
-        let currentTime = 0;
-        const segments = sentences.map((sentence, index) => {
-            const wordCount = sentenceWordCounts[index];
-            const proportion = wordCount / totalWords;
-            const duration = totalDuration * proportion;
-            
-            const segment = {
-                start: currentTime,
-                end: Math.min(currentTime + duration, totalDuration),
-                text: sentence.trim(),
-                wordCount: wordCount
-            };
-            
-            currentTime += duration;
-            return segment;
-        });
-        
-        console.log(`[${jobId}] Created ${segments.length} timed segments in ${targetLanguageName}`);
-        
-        // Ensure captions directory exists
-        const captionsDir = path.join(process.cwd(), 'uploads', 'captions');
-        if (!fs.existsSync(captionsDir)) {
-            fs.mkdirSync(captionsDir, { recursive: true });
-        }
-        
-        const accurateCaptionPath = path.join(captionsDir, `${jobId}_captions_accurate.vtt`);
-        
-        // ✅ Create VTT content with 5 words per caption
-        let vttContent = `WEBVTT
-Kind: captions
-Language: ${targetLanguage}
 
-NOTE
-Generated from ${targetLanguageName} translation
-${segments.length} segments
-Generated: ${new Date().toISOString()}
+//Varunnnnnnnnnn
 
-`;
-        
-        // ✅ Extract words from segments and group into 5-word captions
-        const allWords = [];
-        segments.forEach(segment => {
-            const words = segment.text.split(/\s+/).filter(w => w.length > 0);
-            const wordDuration = (segment.end - segment.start) / words.length;
-            
-            words.forEach((word, idx) => {
-                allWords.push({
-                    word: word,
-                    start: segment.start + (idx * wordDuration),
-                    end: segment.start + ((idx + 1) * wordDuration)
-                });
-            });
-        });
-        
-        // ✅ Group into 5-word captions
-        const WORDS_PER_CAPTION = 5;
-        let captionIndex = 1;
-        
-        for (let i = 0; i < allWords.length; i += WORDS_PER_CAPTION) {
-            const wordGroup = allWords.slice(i, i + WORDS_PER_CAPTION);
-            if (wordGroup.length === 0) continue;
-            
-            const startTime = formatTimeVTT(wordGroup[0].start);
-            const endTime = formatTimeVTT(wordGroup[wordGroup.length - 1].end);
-            const text = wordGroup.map(w => w.word).join(' ');
-            
-            vttContent += `${captionIndex}\n${startTime} --> ${endTime}\n${text}\n\n`;
-            captionIndex++;
-        }
-        
-        fs.writeFileSync(accurateCaptionPath, vttContent, 'utf8');
-        
-        console.log(`[${jobId}] ✅ Accurate VTT caption file saved to ${accurateCaptionPath}`);
-        console.log(`[${jobId}] Generated ${captionIndex - 1} captions in ${targetLanguageName}`);
-        
-        return accurateCaptionPath;
-        
-    } catch (error) {
-        console.warn(`[${jobId}] ⚠️ Caption generation failed: ${error.message}`);
-        return null;
-    }
-}
 
 // ✅ Helper function for time formatting (ADD THIS)
 function formatTimeVTT(seconds) {
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    const secs = (seconds % 60).toFixed(3);
-    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${secs.padStart(6, '0')}`;
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = (seconds % 60).toFixed(3);
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${secs.padStart(6, '0')}`;
 }
 
 // ✅ Helper function for language names (ADD THIS)
 function getLanguageName(langCode) {
-    const names = {
-        'hi': 'Hindi', 'gu': 'Gujarati', 'kn': 'Kannada',
-        'te': 'Telugu', 'ta': 'Tamil', 'bn': 'Bengali',
-        'ml': 'Malayalam', 'mr': 'Marathi', 'ur': 'Urdu',
-        'pa': 'Punjabi', 'en': 'English'
-    };
-    return names[langCode] || langCode;
+  const names = {
+    'hi': 'Hindi', 'gu': 'Gujarati', 'kn': 'Kannada',
+    'te': 'Telugu', 'ta': 'Tamil', 'bn': 'Bengali',
+    'ml': 'Malayalam', 'mr': 'Marathi', 'ur': 'Urdu',
+    'pa': 'Punjabi', 'en': 'English'
+  };
+  return names[langCode] || langCode;
 }
 
 
 function generateVTTFromWordTimings(wordTimings, segments) {
-    let vtt = 'WEBVTT\n\n';
-    
-    if (!wordTimings || wordTimings.length === 0) {
-        return null;
-    }
-    
-    // If segments exist, use them
-    if (segments && segments.length > 0) {
-        segments.forEach((segment, index) => {
-            if (segment.text) {
-                const startTime = formatVTTTime(segment.start || 0);
-                const endTime = formatVTTTime(segment.end || 0);
-                
-                vtt += `${index + 1}\n`;
-                vtt += `${startTime} --> ${endTime}\n`;
-                vtt += `${segment.text}\n\n`;
-            }
-        });
-    } else {
-        // Use word timings directly
-        wordTimings.forEach((timing, index) => {
-            const text = timing.word || timing.text || timing.phoneme || '';
-            const start = timing.start || 0;
-            const end = timing.end || start + 0.5;
-            
-            if (text) {
-                const startTime = formatVTTTime(start);
-                const endTime = formatVTTTime(end);
-                
-                vtt += `${index + 1}\n`;
-                vtt += `${startTime} --> ${endTime}\n`;
-                vtt += `${text}\n\n`;
-            }
-        });
-    }
-    
-    return vtt;
+  let vtt = 'WEBVTT\n\n';
+
+  if (!wordTimings || wordTimings.length === 0) {
+    return null;
+  }
+
+  // If segments exist, use them
+  if (segments && segments.length > 0) {
+    segments.forEach((segment, index) => {
+      if (segment.text) {
+        const startTime = formatVTTTime(segment.start || 0);
+        const endTime = formatVTTTime(segment.end || 0);
+
+        vtt += `${index + 1}\n`;
+        vtt += `${startTime} --> ${endTime}\n`;
+        vtt += `${segment.text}\n\n`;
+      }
+    });
+  } else {
+    // Use word timings directly
+    wordTimings.forEach((timing, index) => {
+      const text = timing.word || timing.text || timing.phoneme || '';
+      const start = timing.start || 0;
+      const end = timing.end || start + 0.5;
+
+      if (text) {
+        const startTime = formatVTTTime(start);
+        const endTime = formatVTTTime(end);
+
+        vtt += `${index + 1}\n`;
+        vtt += `${startTime} --> ${endTime}\n`;
+        vtt += `${text}\n\n`;
+      }
+    });
+  }
+
+  return vtt;
 }
 
 function formatVTTTime(seconds) {
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    const secs = Math.floor(seconds % 60);
-    const ms = Math.floor((seconds % 1) * 1000);
-    
-    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`;
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = Math.floor(seconds % 60);
+  const ms = Math.floor((seconds % 1) * 1000);
+
+  return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`;
 }
 
 
@@ -649,7 +521,7 @@ const discoverJobFilesAdvanced = async (jobId) => {
 };
 
 // ===== FRAME-LEVEL DURATION VALIDATION =====
-const performFrameLevelDurationValidation = async (videoPath, audioPath, lipSyncReference, phonemeAlignment, jobId) => {
+const performFrameLevelDurationValidation = async (videoPath, audioPath, lipSyncReference, wordLevelAlignment, jobId) => {
   console.log(`[${jobId}] Performing frame-level duration validation with microsecond precision...`);
 
   try {
@@ -691,7 +563,7 @@ const performFrameLevelDurationValidation = async (videoPath, audioPath, lipSync
       adjustmentStrategy = 'lip_sync_guided';
     }
 
-    if (phonemeAlignment && phonemeAlignment.lip_sync_enabled) {
+    if (wordLevelAlignment && wordLevelAlignment.lip_sync_enabled) {
       if (syncQuality === 'good') syncQuality = 'very_good';
       adjustmentStrategy = 'phoneme_guided';
     }
@@ -741,7 +613,7 @@ const performFrameLevelDurationValidation = async (videoPath, audioPath, lipSync
 };
 
 // ===== REAL-TIME SYNC ADJUSTMENT =====
-const performRealTimeSyncAdjustment = async (audioPath, videoPath, frameLevelValidation, lipSyncReference, phonemeAlignment, jobId) => {
+const performRealTimeSyncAdjustment = async (audioPath, videoPath, frameLevelValidation, lipSyncReference, wordLevelAlignment, jobId) => {
   console.log(`[${jobId}] Performing real-time sync adjustment with frame-level precision...`);
 
   try {
@@ -756,12 +628,12 @@ const performRealTimeSyncAdjustment = async (audioPath, videoPath, frameLevelVal
     // Choose adjustment method based on available data and strategy
     switch (strategy) {
       case 'phoneme_guided':
-        if (phonemeAlignment) {
+        if (wordLevelAlignment) {
           await applyPhonemeGuidedAdjustment(
             audioPath,
             adjustedAudioPath,
             targetDuration,
-            phonemeAlignment,
+            wordLevelAlignment,
             jobId
           );
           break;
@@ -817,15 +689,15 @@ const performRealTimeSyncAdjustment = async (audioPath, videoPath, frameLevelVal
 };
 
 // ===== APPLY PHONEME GUIDED ADJUSTMENT =====
-const applyPhonemeGuidedAdjustment = async (inputPath, outputPath, targetDuration, phonemeAlignment, jobId) => {
+const applyPhonemeGuidedAdjustment = async (inputPath, outputPath, targetDuration, wordLevelAlignment, jobId) => {
   console.log(`[${jobId}] Applying phoneme-guided real-time adjustment...`);
 
-  if (!phonemeAlignment.phoneme_timings || phonemeAlignment.phoneme_timings.length === 0) {
+  if (!wordLevelAlignment.phoneme_timings || wordLevelAlignment.phoneme_timings.length === 0) {
     throw new Error('No phoneme timings available for guided adjustment');
   }
 
   // Create complex filter based on phoneme timings
-  const phonemeTimings = phonemeAlignment.phoneme_timings;
+  const phonemeTimings = wordLevelAlignment.phoneme_timings;
   const totalPhonemes = phonemeTimings.length;
 
   // Calculate tempo adjustments per phoneme segment
@@ -937,7 +809,7 @@ const applyFramePerfectAdjustment = async (inputPath, outputPath, targetDuration
 };
 
 // ===== ADVANCED NEURAL SYNC VALIDATION =====
-const performAdvancedNeuralSyncValidation = async (videoPath, audioPath, lipSyncReference, phonemeAlignment, jobId) => {
+const performAdvancedNeuralSyncValidation = async (videoPath, audioPath, lipSyncReference, wordLevelAlignment, jobId) => {
   console.log(`[${jobId}] Performing advanced neural sync validation...`);
 
   try {
@@ -946,8 +818,8 @@ const performAdvancedNeuralSyncValidation = async (videoPath, audioPath, lipSync
 
     // Additional phoneme-based validation if available
     let phonemeValidation = null;
-    if (phonemeAlignment && phonemeAlignment.phoneme_timings) {
-      phonemeValidation = await validatePhonemeSync(audioPath, phonemeAlignment, jobId);
+    if (wordLevelAlignment && wordLevelAlignment.phoneme_timings) {
+      phonemeValidation = await validatePhonemeSync(audioPath, wordLevelAlignment, jobId);
     }
 
     // Additional lip sync cross-validation
@@ -1089,7 +961,7 @@ const applyNeuralSyncCorrection = async (audioPath, videoPath, neuralSyncResults
 };
 
 // ===== VALIDATE FINAL LIP SYNC =====
-const validateFinalLipSync = async (videoPath, audioPath, lipSyncReference, phonemeAlignment, jobId) => {
+const validateFinalLipSync = async (videoPath, audioPath, lipSyncReference, wordLevelAlignment, jobId) => {
   console.log(`[${jobId}] Performing final lip sync validation...`);
 
   try {
@@ -1140,7 +1012,6 @@ const validateFinalLipSync = async (videoPath, audioPath, lipSyncReference, phon
 };
 
 // ✅ CRITICAL FIX: FRAME-PERFECT VIDEO ASSEMBLY WITH PROPER SUBTITLE EMBEDDING
-// ===== CRITICAL FIX: FRAME-PERFECT VIDEO ASSEMBLY WITH PROPER SUBTITLE EMBEDDING =====
 const performFramePerfectVideoAssemblyFixed = async (
   videoPath,
   audioPath,
@@ -1149,50 +1020,38 @@ const performFramePerfectVideoAssemblyFixed = async (
   frameLevelValidation,
   neuralSyncResults,
   lipSyncValidation,
-  jobId
+  jobId,
+  targetLanguage
 ) => {
-  console.log(`[${jobId}] Performing frame-perfect video assembly using robust 'spawn' method...`);
+  console.log(`[${jobId}] Performing frame-perfect video assembly for language: ${targetLanguage}`);
 
-  // ✅ Initialize stats object
   const stats = {
     startTime: Date.now(),
     inputSizes: {},
-    processingSteps: [],
-    finalStats: null
   };
 
   try {
-    // ✅ Record input file sizes
     stats.inputSizes.video = fs.existsSync(videoPath) ? fs.statSync(videoPath).size : 0;
     stats.inputSizes.audio = fs.existsSync(audioPath) ? fs.statSync(audioPath).size : 0;
     if (fs.existsSync(captionPath)) {
       stats.inputSizes.captions = fs.statSync(captionPath).size;
     }
 
-    // --- 1. SETUP AND VALIDATION ---
-    const hasCaptions = fs.existsSync(captionPath);
+    const hasCaptions = fs.existsSync(captionPath) && fs.statSync(captionPath).size > 0;
     const targetDuration = frameLevelValidation.videoDuration;
     const fps = frameLevelValidation.fps;
 
     if (!fs.existsSync(videoPath)) throw new Error(`Video input not found: ${videoPath}`);
     if (!fs.existsSync(audioPath)) throw new Error(`Audio input not found: ${audioPath}`);
 
-    const videoPathFixed = path.resolve(videoPath);
-    const audioPathFixed = path.resolve(audioPath);
-    const outputPathFixed = path.resolve(outputPath);
-
-    console.log(`[${jobId}]   Assembly configuration: Duration=${targetDuration.toFixed(4)}s, FPS=${fps}, Captions=${hasCaptions}`);
-
     return new Promise((resolve, reject) => {
-      // --- 2. BUILD FFMPEG ARGUMENTS ARRAY ---
       const args = [
-        '-i', videoPathFixed,
-        '-i', audioPathFixed,
+        '-i', path.resolve(videoPath),
+        '-i', path.resolve(audioPath),
         '-map', '0:v',
         '-map', '1:a'
       ];
 
-      // --- 3. BUILD FILTER CHAINS ---
       const videoFilters = ['scale=-2:720', `fps=${fps}`];
       const audioFilters = [
         'aresample=44100',
@@ -1200,98 +1059,281 @@ const performFramePerfectVideoAssemblyFixed = async (
         `afade=out:st=${targetDuration - 0.005}:d=0.005`
       ];
 
+      // ✅ CORRECTED: Proper subtitle handling with COMPREHENSIVE DEBUGGING
       if (hasCaptions) {
-    const absoluteCaptionPath = path.resolve(captionPath);
-    // ✅ FIX: Proper Windows path escaping for FFmpeg
-    const escapedCaptionPath = absoluteCaptionPath
-        .replace(/\\/g, '/')      // Convert backslashes to forward slashes
-        .replace(/:/g, '\\\\:')   // Escape colons for filter syntax (double escape)
-        .replace(/'/g, "\\'");    // Escape single quotes
-    
-    const subtitleFilter = `subtitles='${escapedCaptionPath}':force_style='FontSize=16,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2'`;
-    videoFilters.push(subtitleFilter);
-    console.log(`[${jobId}] ✅ Subtitle filter prepared with path: ${escapedCaptionPath.substring(0, 50)}...`);
-}
+        console.log(`[${jobId}] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        console.log(`[${jobId}] 🎬 SUBTITLE CONFIGURATION DEBUG`);
+        console.log(`[${jobId}] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 
-      if (neuralSyncResults?.neural && Math.abs(neuralSyncResults.neural.sync_offset) > 0.01) {
-        const offset = neuralSyncResults.neural.sync_offset;
-        console.log(`[${jobId}] Applying neural sync offset: ${offset}s`);
-        const delayFilter = offset > 0 ? `adelay=${offset * 1000}:all=1` : `atrim=${Math.abs(offset)}`;
-        audioFilters.unshift(delayFilter);
+        // Step 1: Original path
+        console.log(`[${jobId}] 📝 Step 1 - Original caption path:`);
+        console.log(`[${jobId}]    ${captionPath}`);
+
+        // Step 2: Absolute path
+        const absoluteCaptionPath = path.resolve(captionPath);
+        console.log(`[${jobId}] 📂 Step 2 - Absolute path:`);
+        console.log(`[${jobId}]    ${absoluteCaptionPath}`);
+
+        // Verify file exists and has content
+        const captionStats = fs.statSync(absoluteCaptionPath);
+        console.log(`[${jobId}] ✅ Step 3 - File verified: ${(captionStats.size / 1024).toFixed(2)}KB`);
+
+        // ✅ CRITICAL: Validate VTT file content
+        console.log(`[${jobId}] 🔍 Step 3.5 - Validating VTT content:`);
+        try {
+          const vttContent = fs.readFileSync(absoluteCaptionPath, 'utf8');
+          const lines = vttContent.split('\n');
+          const cueCount = vttContent.match(/\d{2}:\d{2}:\d{2}\.\d{3} --> \d{2}:\d{2}:\d{2}\.\d{3}/g)?.length || 0;
+
+          console.log(`[${jobId}]    📄 VTT file lines: ${lines.length}`);
+          console.log(`[${jobId}]    🎬 Subtitle cues found: ${cueCount}`);
+          console.log(`[${jobId}]    📝 First 500 chars of VTT:`);
+          console.log(`[${jobId}]    ─────────────────────────────────────────`);
+          console.log(vttContent.substring(0, 500));
+          console.log(`[${jobId}]    ─────────────────────────────────────────`);
+
+          if (cueCount === 0) {
+            console.error(`[${jobId}]    ❌ ERROR: VTT file has NO subtitle cues!`);
+            console.error(`[${jobId}]    ❌ This will result in no captions being displayed`);
+            throw new Error('VTT file is empty or malformed - no subtitle cues found');
+          }
+
+          if (vttContent.length < 100) {
+            console.warn(`[${jobId}]    ⚠️ WARNING: VTT file is very small (${vttContent.length} bytes)`);
+            console.warn(`[${jobId}]    ⚠️ This may indicate an incomplete caption file`);
+          }
+
+          console.log(`[${jobId}] ✅ Step 3.5 - VTT content validation PASSED`);
+
+        } catch (vttError) {
+          console.error(`[${jobId}] ❌ VTT content validation FAILED:`, vttError.message);
+          throw new Error(`VTT file validation failed: ${vttError.message}`);
+        }
+
+
+        // ✅ CRITICAL FIX: Proper Windows path escaping for FFmpeg
+        // Method: Replace backslashes FIRST, then escape the colon in drive letter
+        console.log(`[${jobId}] 🔧 Step 4 - Path escaping process:`);
+
+        // Step 4a: Replace backslashes with forward slashes
+        let escapedCaptionPath = absoluteCaptionPath.replace(/\\/g, '/');
+        console.log(`[${jobId}]    4a. After backslash replacement: ${escapedCaptionPath}`);
+
+        // Step 4b: Escape the colon in drive letter (C: -> C\:)
+        // Match drive letter pattern at start: X:/ where X is any letter
+        escapedCaptionPath = escapedCaptionPath.replace(/^([A-Za-z]):/, '$1\\:');
+        console.log(`[${jobId}]    4b. After colon escape: ${escapedCaptionPath}`);
+
+        // Step 4c: Verify the result
+        if (!escapedCaptionPath.match(/^[A-Za-z]\\:/)) {
+          console.error(`[${jobId}] ❌ ERROR: Drive letter not properly escaped!`);
+          console.error(`[${jobId}]    Expected format: C\\:/path/to/file`);
+          console.error(`[${jobId}]    Got: ${escapedCaptionPath}`);
+          throw new Error('Caption path escaping failed - drive letter missing');
+        }
+        console.log(`[${jobId}] ✅ Step 4 - Path escaping VERIFIED`);
+
+        // Step 5: Fonts directory
+        console.log(`[${jobId}] 🎨 Step 5 - Font configuration:`);
+        const fontsDir = path.join(process.cwd(), 'fonts');
+        console.log(`[${jobId}]    Fonts directory: ${fontsDir}`);
+
+        let fontsDirPath = '';
+        let useFontsDir = false;
+
+        if (fs.existsSync(fontsDir)) {
+          fontsDirPath = fontsDir
+            .replace(/\\/g, '/')
+            .replace(/^([A-Za-z]):/, '$1\\:');
+          useFontsDir = true;
+          console.log(`[${jobId}]    ✅ Fonts found and escaped: ${fontsDirPath}`);
+
+          // List available fonts
+          try {
+            const fontFiles = fs.readdirSync(fontsDir).filter(f =>
+              f.endsWith('.ttf') || f.endsWith('.otf') || f.endsWith('.ttc')
+            );
+            console.log(`[${jobId}]    📚 Available fonts (${fontFiles.length}): ${fontFiles.slice(0, 3).join(', ')}${fontFiles.length > 3 ? '...' : ''}`);
+          } catch (err) {
+            console.warn(`[${jobId}]    ⚠️ Could not list fonts: ${err.message}`);
+          }
+        } else {
+          console.warn(`[${jobId}]    ⚠️ Fonts directory NOT FOUND`);
+          console.warn(`[${jobId}]    ⚠️ Will use system fonts (may not render correctly)`);
+        }
+
+        
+// Step 6: Font selection
+const fontMap = {
+  'hi': 'Noto Sans Devanagari', 'gu': 'Noto Sans Gujarati', 'ta': 'Noto Sans Tamil',
+  'te': 'Noto Sans Telugu', 'bn': 'Noto Sans Bengali', 'pa': 'Noto Sans Gurmukhi',
+  'kn': 'Noto Sans Kannada', 'ml': 'Noto Sans Malayalam', 'mr': 'Noto Sans Devanagari',
+  'or': 'Noto Sans Oriya', 'as': 'Noto Sans Bengali', 'ur': 'Noto Nastaliq Urdu',
+  'en': 'Arial'
+};
+
+const fontName = fontMap[targetLanguage] || 'Arial';
+
+// ADD THIS NEW CODE FOR DYNAMIC FONT SIZE
+const config = getConfig(targetLanguage);
+const fontSize = config.fontSize;
+console.log(`[${jobId}]    🎯 Selected font: ${fontName} (language: ${targetLanguage}), size: ${fontSize}`);
+
+// Step 7: Build subtitle style WITH DYNAMIC FONT SIZE
+console.log(`[${jobId}] 🎨 Step 6 - Building subtitle style:`);
+const subtitleStyle = [
+  `FontName=${fontName}`,
+  `FontSize=${fontSize}`,  // ← FIXED: Dynamic size!
+  "PrimaryColour=&H00FFFFFF",
+  "SecondaryColour=&H00FFFFFF",
+  "OutlineColour=&H00000000",
+  "BackColour=&H00000000",
+  "Bold=0",
+  "BorderStyle=1",
+  "Outline=2",
+  "Shadow=1",
+  "Alignment=2",
+  "MarginL=20",
+  "MarginR=20",
+  "MarginV=25"
+].join(',');
+
+        console.log(`[${jobId}]    Style (first 80 chars): ${subtitleStyle.substring(0, 80)}...`);
+
+        // ✅ CRITICAL FIX: Step 8: Build subtitle filter WITH QUOTED PATHS
+        console.log(`[${jobId}] 🔧 Step 7 - Building subtitle filter:`);
+        let subtitleFilter;
+
+        // ✅ CRITICAL: Wrap paths in single quotes to handle spaces
+        // FFmpeg filter syntax: subtitles='path':fontsdir='path':force_style='style'
+        if (useFontsDir) {
+          subtitleFilter = `subtitles='${escapedCaptionPath}':fontsdir='${fontsDirPath}':force_style='${subtitleStyle}'`;
+        } else {
+          subtitleFilter = `subtitles='${escapedCaptionPath}':force_style='${subtitleStyle}'`;
+        }
+
+        console.log(`[${jobId}]    ⚠️  Note: Paths wrapped in quotes to handle spaces in directory names`);
+
+
+        console.log(`[${jobId}]    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        console.log(`[${jobId}]    🎬 COMPLETE SUBTITLE FILTER:`);
+        console.log(`[${jobId}]    ${subtitleFilter}`);
+        console.log(`[${jobId}]    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+
+        videoFilters.push(subtitleFilter);
+        console.log(`[${jobId}] ✅ Subtitle filter added to video filters array`);
+        console.log(`[${jobId}] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
       }
 
-      if (videoFilters.length > 0) args.push('-vf', videoFilters.join(','));
-      if (audioFilters.length > 0) args.push('-af', audioFilters.join(','));
+      // Audio sync correction
+      if (neuralSyncResults?.neural && Math.abs(neuralSyncResults.neural.sync_offset) > 0.01) {
+        const offset = neuralSyncResults.neural.sync_offset;
+        const delayFilter = offset > 0
+          ? `adelay=${Math.round(offset * 1000)}|${Math.round(offset * 1000)}`
+          : `atrim=start=${Math.abs(offset)}`;
+        audioFilters.unshift(delayFilter);
+        console.log(`[${jobId}] ⏱️ Audio sync offset applied: ${offset.toFixed(3)}s`);
+      }
 
-      // --- 4. ADD ENCODING OPTIONS ---
+      // Add filters to FFmpeg args
+      if (videoFilters.length > 0) {
+        args.push('-vf', videoFilters.join(','));
+        console.log(`[${jobId}] 📹 Video filter chain (${videoFilters.length} filters):`);
+        videoFilters.forEach((filter, idx) => {
+          const preview = filter.length > 100 ? filter.substring(0, 100) + '...' : filter;
+          console.log(`[${jobId}]    ${idx + 1}. ${preview}`);
+        });
+      }
+
+      if (audioFilters.length > 0) {
+        args.push('-af', audioFilters.join(','));
+        console.log(`[${jobId}] 🔊 Audio filter chain (${audioFilters.length} filters): ${audioFilters.join(' | ')}`);
+      }
+
+      // Output encoding settings
       args.push(
-        '-c:v', 'libx264',
-        '-c:a', 'aac',
-        '-b:v', '2000k',
-        '-b:a', '192k',
-        '-preset', 'medium',
-        '-crf', '23',
-        '-avoid_negative_ts', 'make_zero',
-        '-fflags', '+genpts',
-        '-t', targetDuration.toString(),
-        '-shortest',
-        '-y',
-        outputPathFixed
+        '-c:v', 'libx264', '-c:a', 'aac', '-b:v', '2000k', '-b:a', '192k',
+        '-preset', 'medium', '-crf', '23', '-profile:v', 'main', '-pix_fmt', 'yuv420p',
+        '-movflags', '+faststart', '-avoid_negative_ts', 'make_zero', '-fflags', '+genpts',
+        '-t', targetDuration.toFixed(3), '-shortest', '-y', path.resolve(outputPath)
       );
 
-      console.log(`[${jobId}] Spawning FFmpeg process...`);
+      console.log(`[${jobId}] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      console.log(`[${jobId}] 🚀 Starting FFmpeg process...`);
+      console.log(`[${jobId}] ⏱️  Target duration: ${targetDuration.toFixed(3)}s @ ${fps}fps`);
+      console.log(`[${jobId}] 📺 Output: ${path.basename(outputPath)}`);
+      console.log(`[${jobId}] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+
       const ffmpegProcess = spawn(ffmpegStatic, args);
 
       let stderr = '';
+      let lastProgress = '';
 
       ffmpegProcess.stderr.on('data', (data) => {
-        stderr += data.toString();
+        const chunk = data.toString();
+        stderr += chunk;
+
+        // ✅ ADDED: Check for subtitle-related messages
+        if (chunk.includes('subtitle')) {
+          console.log(`[${jobId}] 📝 Subtitle processing: ${chunk.trim()}`);
+        }
+
+        if (chunk.includes('libass')) {
+          console.log(`[${jobId}] 🎨 Font rendering: ${chunk.trim()}`);
+        }
+
+        if (chunk.includes('Error') || chunk.includes('Warning')) {
+          console.warn(`[${jobId}] ⚠️ FFmpeg warning/error: ${chunk.trim()}`);
+        }
+
+
+
+        // Show progress
+        const progressMatch = chunk.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);
+        if (progressMatch && progressMatch[1] !== lastProgress) {
+          lastProgress = progressMatch[1];
+          console.log(`[${jobId}] ⏳ Progress: ${progressMatch[1]}`);
+        }
       });
 
       ffmpegProcess.on('close', (code) => {
         if (code === 0) {
-          console.log(`[${jobId}] ✅ FFmpeg process completed successfully.`);
-          if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 10000) {
-            return reject(new Error('Assembly finished, but the output file is missing or too small.'));
-          }
+          const outputSize = fs.existsSync(outputPath) ? fs.statSync(outputPath).size : 0;
+          stats.outputSize = outputSize;
+          stats.processingTime = Date.now() - stats.startTime;
 
-          // ✅ Calculate final stats and resolve with stats
-          const outputStats = fs.statSync(outputPath);
-          const processingTime = Date.now() - stats.startTime;
-
-          stats.finalStats = {
-            outputSize: outputStats.size,
-            processingTime,
-            compressionRatio: stats.inputSizes.video > 0 ? outputStats.size / stats.inputSizes.video : 0,
-            subtitlesEmbedded: hasCaptions
-          };
+          console.log(`[${jobId}] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+          console.log(`[${jobId}] ✅ FFmpeg completed successfully!`);
+          console.log(`[${jobId}] 📦 Output size: ${(outputSize / 1024 / 1024).toFixed(2)}MB`);
+          console.log(`[${jobId}] ⏱️  Processing time: ${(stats.processingTime / 1000).toFixed(2)}s`);
+          console.log(`[${jobId}] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 
           resolve({ outputPath, stats });
         } else {
-          console.error(`[${jobId}] ❌ FFmpeg process exited with code ${code}.`);
-          console.error(`[${jobId}] FFmpeg stderr:`, stderr.substring(0, 2000));
+          console.error(`[${jobId}] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+          console.error(`[${jobId}] ❌ FFmpeg FAILED with exit code ${code}`);
+          console.error(`[${jobId}] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+          console.error(`[${jobId}] 📋 FULL FFmpeg stderr output (last 4000 chars):`);
+          console.error(stderr.slice(-4000));
+          console.error(`[${jobId}] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 
-          let specificError = `FFmpeg failed with exit code ${code}.`;
-          if (stderr.includes('Unable to parse option value')) {
-            specificError = 'Subtitle path parsing error inside FFmpeg. Check filter syntax.';
-          } else if (stderr.includes('No such file or directory')) {
-            specificError = 'An input file was not found by FFmpeg. Check paths.';
-          }
-
-          reject(new Error(specificError));
+          reject(new Error(`FFmpeg failed with exit code ${code}.`));
         }
       });
 
       ffmpegProcess.on('error', (err) => {
-        console.error(`[${jobId}] ❌ Failed to start FFmpeg process:`, err);
-        reject(new Error('Failed to start the FFmpeg subprocess.'));
+        console.error(`[${jobId}] ❌ Failed to start FFmpeg process:`, err.message);
+        console.error(`[${jobId}] Error details:`, err);
+        reject(new Error(`Failed to start FFmpeg subprocess: ${err.message}`));
       });
     });
   } catch (error) {
-    console.error(`[${jobId}] ❌ A setup error occurred in video assembly:`, error.message);
+    console.error(`[${jobId}] ❌ Setup error in video assembly:`, error.message);
+    console.error(`[${jobId}] Stack trace:`, error.stack);
     throw error;
   }
 };
+
 
 
 
@@ -1588,16 +1630,16 @@ const determineOverallSyncQuality = (neuralResults, phonemeValidation, lipSyncVa
 };
 
 // ===== VALIDATE PHONEME SYNC =====
-const validatePhonemeSync = async (audioPath, phonemeAlignment, jobId) => {
+const validatePhonemeSync = async (audioPath, wordLevelAlignment, jobId) => {
   console.log(`[${jobId}] Validating phoneme sync...`);
 
   try {
-    if (!phonemeAlignment.phoneme_timings || phonemeAlignment.phoneme_timings.length === 0) {
+    if (!wordLevelAlignment.phoneme_timings || wordLevelAlignment.phoneme_timings.length === 0) {
       return { confidence: 0.1, accuracy: 0.1, method: 'no_phonemes' };
     }
 
     const audioDuration = await getUltraPreciseAudioDuration(audioPath);
-    const lastTiming = phonemeAlignment.phoneme_timings[phonemeAlignment.phoneme_timings.length - 1];
+    const lastTiming = wordLevelAlignment.phoneme_timings[wordLevelAlignment.phoneme_timings.length - 1];
     const phonemeDuration = lastTiming.end;
 
     const durationMatch = Math.abs(audioDuration - phonemeDuration) < 0.5;
@@ -2624,5 +2666,6 @@ export default {
   formatTimestampVTT,
   formatTimestampSRT,
   resumeProcessing,           // Add this
-  escapeSubtitlePath
+  escapeSubtitlePath,
+  generateAccurateCaptions 
 };

@@ -574,6 +574,7 @@ const prepareSegmentTimings = (segments, totalDuration, jobId) => {
     }
 
     // Normalize all timings to ensure exact target duration match
+// Normalize all timings to ensure exact target duration match
 const calculatedTotal = currentTime;
 if (calculatedTotal > 0 && Math.abs(calculatedTotal - totalDuration) > 0.01) {
     const adjustmentFactor = totalDuration / calculatedTotal;
@@ -582,22 +583,20 @@ if (calculatedTotal > 0 && Math.abs(calculatedTotal - totalDuration) > 0.01) {
     timings.forEach((timing, idx) => {
         timing.start = runningTime;
         timing.duration *= adjustmentFactor;
-        
-        // ✅ FIX: Ensure last segment ends exactly at target duration
-        if (idx === timings.length - 1) {
-            timing.end = totalDuration;
-            timing.duration = totalDuration - timing.start;
-        } else {
-            timing.end = timing.start + timing.duration;
-        }
-        
+        timing.end = timing.start + timing.duration;
         runningTime = timing.end;
-        
-        // ✅ FIX: Keep original speech rate to prevent re-compression
-        // Don't recalculate - it causes cumulative timing errors
     });
     
-    console.log(`[${jobId}] ✅ Timings normalized: ${timings[0].start.toFixed(3)}s to ${timings[timings.length-1].end.toFixed(3)}s`);
+    // Final precision fix for last segment only
+    const lastTiming = timings[timings.length - 1];
+    if (Math.abs(lastTiming.end - totalDuration) > 0.001) {
+        const correction = totalDuration - lastTiming.end;
+        lastTiming.end = totalDuration;
+        lastTiming.duration += correction;
+        console.log(`[${jobId}] Applied final ${correction.toFixed(3)}s correction to last segment`);
+    }
+    
+    console.log(`[${jobId}] Timings normalized: ${timings[0].start.toFixed(3)}s to ${timings[timings.length-1].end.toFixed(3)}s`);
 }
 
     console.log(`[${jobId}] ✅ Dynamic timings calculated: min=${Math.min(...timings.map(t => t.duration)).toFixed(2)}s, max=${Math.max(...timings.map(t => t.duration)).toFixed(2)}s`);

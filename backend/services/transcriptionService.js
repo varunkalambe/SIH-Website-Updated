@@ -1,111 +1,203 @@
 // services/transcriptionService.js - REAL AUDIO TRANSCRIPTION SERVICE
-
+import util from 'util';
 import { exec } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { promisify } from 'util';
+import { translateText } from './translationService.js';
 
-const execAsync = promisify(exec);
+const execPromise = util.promisify(exec);
 
-// ===== MAIN TRANSCRIPTION FUNCTION - PRIMARY API FIRST WITH MULTI-ENGINE FALLBACK =====
-export const transcribeAudio = async (audioPath, jobId, options = {}) => {
-  return new Promise(async (resolve, reject) => {
-    try {
-      console.log(`[${jobId}] Starting enhanced transcription with multiple engines...`);
-      
-      // ===== VALIDATE INPUT =====
-      if (!fs.existsSync(audioPath)) {
-        throw new Error(`Audio file not found: ${audioPath}`);
-      }
-      
-      // ===== PARSE OPTIONS =====
-      const {
-        preferredEngine = 'openai', // Changed default to 'openai' for primary API priority
-        language = 'hi',
-        enableDiarization = false,
-        enableEnhancement = true,
-        maxDuration = 600 // 10 minutes
-      } = options;
-      
-      console.log(`[${jobId}] Transcription options:`, {
-        engine: preferredEngine,
-        language: language,
-        diarization: enableDiarization,
-        enhancement: enableEnhancement
-      });
-      
-      // ===== SETUP DIRECTORIES =====
-      const tempDir = path.join(process.cwd(), `uploads/transcription/${jobId}`);
-      if (!fs.existsSync(tempDir)) {
-        fs.mkdirSync(tempDir, { recursive: true });
-      }
-      
-      const transcriptionFile = path.join(tempDir, 'transcription_results.json');
-      let transcriptionResult = null;
-      
-      // ===== PRIORITY 1: OPENAI WHISPER API (PRIMARY RELIABLE SERVICE) =====
-      try {
-        console.log(`[${jobId}] Attempting primary transcription with OpenAI Whisper API...`);
-        transcriptionResult = await transcribeWithOpenAIWhisper(audioPath, jobId, language, options);
-        
-        if (transcriptionResult && transcriptionResult.text) {
-          console.log(`[${jobId}] ✅ Transcription completed successfully with primary service (OpenAI API)`);
-          await saveTranscriptionResults(transcriptionResult, transcriptionFile, jobId);
-          resolve(transcriptionResult);
-          return;
-        }
-      } catch (openaiError) {
-        console.warn(`[${jobId}] Primary OpenAI Whisper API failed: ${openaiError.message}`);
-        console.log(`[${jobId}] Falling back to local transcription models...`);
-      }
-      
-      // ===== PRIORITY 2: LOCAL WHISPER AI (FREE FALLBACK) =====
-      try {
-        console.log(`[${jobId}] Attempting local Whisper AI transcription fallback...`);
-        transcriptionResult = await transcribeWithWhisper(audioPath, jobId, language, options);
-        
-        if (transcriptionResult && transcriptionResult.text) {
-          console.log(`[${jobId}] ✅ Transcription completed with fallback service (Local Whisper)`);
-          await saveTranscriptionResults(transcriptionResult, transcriptionFile, jobId);
-          resolve(transcriptionResult);
-          return;
-        }
-      } catch (whisperError) {
-        console.warn(`[${jobId}] Local Whisper AI fallback failed: ${whisperError.message}`);
-      }
-      
-      
-      // ===== PRIORITY 4: GOOGLE SPEECH API (PAID FALLBACK) =====
-      try {
-        console.log(`[${jobId}] Attempting Google Speech-to-Text API...`);
-        transcriptionResult = await transcribeWithGoogleSpeech(audioPath, jobId, language, options);
-        
-        if (transcriptionResult && transcriptionResult.text) {
-          console.log(`[${jobId}] ✅ Google Speech API transcription successful`);
-          await saveTranscriptionResults(transcriptionResult, transcriptionFile, jobId);
-          resolve(transcriptionResult);
-          return;
-        }
-      } catch (googleError) {
-        console.warn(`[${jobId}] Google Speech API failed: ${googleError.message}`);
-      }
-      
-      // ===== FINAL FALLBACK: REAL AUDIO ANALYSIS =====
-      try {
-        console.log(`[${jobId}] All transcription models failed. Using real audio analysis fallback...`);
-        transcriptionResult = await createRealAudioTranscription(audioPath, jobId, language);
-        await saveTranscriptionResults(transcriptionResult, transcriptionFile, jobId);
-        resolve(transcriptionResult);
-      } catch (basicError) {
-        console.error(`[${jobId}] All transcription methods, including final fallback, have failed:`, basicError.message);
-        reject(basicError);
-      }
-      
-    } catch (error) {
-      console.error(`[${jobId}] Critical failure in transcription service:`, error.message);
-      reject(error);
+
+/**
+ * Runs the local Whisper AI model via a Python script to get a transcription
+ * with precise word-level timestamps.
+ * @param {string} audioPath Path to the input audio file.
+ * @param {string} language The language of the audio.
+ * @returns {Promise<object>} The parsed JSON output from Whisper.
+ */
+export const transcribeWithLocalWhisper = async (audioPath, language) => {
+  console.log(`[LocalWhisper] Starting process for ${audioPath} in ${language}...`);
+
+  // Define paths
+  const scriptPath = path.join(process.cwd(), 'scripts', 'run_whisper.py');
+  const tempDir = path.join(process.cwd(), 'uploads', 'temp', `whisper_${Date.now()}`);
+  const outputPath = path.join(tempDir, 'result.json');
+
+  // Ensure temp directory exists
+  if (!fs.existsSync(tempDir)) {
+    fs.mkdirSync(tempDir, { recursive: true });
+  }
+
+  // Build the command to execute the Python script
+  const command = `python "${scriptPath}" "${audioPath}" "${outputPath}" --language ${language}`;
+  
+  console.log(`[LocalWhisper] Executing command: ${command}`);
+
+  try {
+    // Execute the command and wait for it to complete
+    const { stdout, stderr } = await execPromise(command);
+
+    if (stderr) {
+      console.warn(`[LocalWhisper] Stderr: ${stderr}`);
     }
+    console.log(`[LocalWhisper] Stdout: ${stdout}`);
+
+    // Read the JSON result file created by the Python script
+    if (fs.existsSync(outputPath)) {
+      const resultJson = fs.readFileSync(outputPath, 'utf-8');
+      const result = JSON.parse(resultJson);
+
+      // Clean up the temporary directory
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      
+      console.log(`[LocalWhisper] ✅ Process successful.`);
+      return result;
+    } else {
+      throw new Error('Whisper script did not produce an output file.');
+    }
+
+  } catch (error) {
+    console.error(`[LocalWhisper] ❌ Failed to execute Whisper script:`, error);
+    // Clean up on error
+    if (fs.existsSync(tempDir)) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+    throw new Error(`Local Whisper transcription failed: ${error.message}`);
+  }
+};
+
+
+// ✅ PASTE THIS ENTIRE HELPER FUNCTION HERE
+// =================================================================
+/**
+ * Checks for Romanized text from Whisper and converts it to native script.
+ * @param {object} transcriptionResult The result object from a transcription engine.
+ * @param {string} language The language code (e.g., 'gu', 'hi').
+ * @param {string} jobId The job ID for logging.
+ * @returns {Promise<object>} The modified transcriptionResult with native script text.
+ */
+const transliterateIfNecessary = async (transcriptionResult, sourceLanguage, jobId) => {
+    if (!transcriptionResult || !transcriptionResult.text) {
+        return transcriptionResult; // Nothing to process
+    }
+
+    console.log(`[${jobId}] Original Whisper output (Romanized): "${transcriptionResult.text.substring(0, 80)}..."`);
+
+    // Check if the output is Romanized and needs conversion
+    const needsTransliteration = /[a-zA-Z]/.test(transcriptionResult.text) && sourceLanguage !== 'en';
+
+    if (needsTransliteration) {
+        console.log(`[${jobId}] 🔄 Romanized text detected. Converting to native ${sourceLanguage} script...`);
+        try {
+            const nativeTextResponse = await translateText(
+                transcriptionResult.text,
+                'en', // Target language
+                sourceLanguage     // Source language (Google will auto-detect Romanization)
+            );
+
+            // Overwrite the romanized text with the proper native script text
+            transcriptionResult.text = nativeTextResponse.text;
+            console.log(`[${jobId}] ✅ Native script output: "${transcriptionResult.text.substring(0, 80)}..."`);
+        } catch (transliterationError) {
+            console.warn(`[${jobId}] ⚠️ Failed to convert Romanized text. Proceeding with original output. Error: ${transliterationError.message}`);
+        }
+    }
+    return transcriptionResult;
+};
+
+
+// ===== MAIN TRANSCRIPTION FUNCTION - REFACTORED TO PREVENT HANGING =====
+export const transcribeAudio = async (audioPath, jobId, sourceLanguage, targetLanguage, options = {}) => {
+  console.log(`[${jobId}] Starting enhanced transcription with multiple engines...`);
+  
+  // ===== VALIDATE INPUT =====
+  if (!fs.existsSync(audioPath)) {
+    throw new Error(`Audio file not found: ${audioPath}`);
+  }
+  
+  // ===== PARSE OPTIONS (Kept from your original code) =====
+  const {
+    preferredEngine = 'openai',
+    enableDiarization = false,
+    enableEnhancement = true,
+  } = options;
+  
+  console.log(`[${jobId}] Transcription options:`, {
+    engine: preferredEngine,
+    sourceLanguage: sourceLanguage,
+    targetLanguage: targetLanguage,
+    diarization: enableDiarization,
+    enhancement: enableEnhancement
   });
+
+  
+  // ===== SETUP DIRECTORIES (Kept from your original code) =====
+  const tempDir = path.join(process.cwd(), `uploads/transcription/${jobId}`);
+  if (!fs.existsSync(tempDir)) {
+    fs.mkdirSync(tempDir, { recursive: true });
+  }
+  const transcriptionFile = path.join(tempDir, 'transcription_results.json');
+  
+  // ✅ FIX: This function is now a pure async function. The 'new Promise' wrapper, which
+  // was the cause of the hanging bug, has been removed. 'return' now resolves the promise,
+  // and 'throw' now rejects it.
+
+  // --- PRIORITY 1: OPENAI WHISPER API ---
+  try {
+    console.log(`[${jobId}] Attempting primary transcription with OpenAI Whisper API...`);
+    const transcriptionResult = await transcribeWithOpenAIWhisper(audioPath, jobId, sourceLanguage, options);
+    
+    if (transcriptionResult && transcriptionResult.text) {
+      console.log(`[${jobId}] ✅ Transcription successful with OpenAI API.`);
+const finalResult = await transliterateIfNecessary(transcriptionResult, sourceLanguage, jobId);
+      await saveTranscriptionResults(finalResult, transcriptionFile, jobId);
+      return finalResult; // This correctly returns the result and ends the function.
+    }
+  } catch (error) {
+    console.warn(`[${jobId}] Primary OpenAI API failed: ${error.message}. Falling back...`);
+  }
+
+  // --- PRIORITY 2: LOCAL WHISPER AI (FREE FALLBACK) ---
+  try {
+    console.log(`[${jobId}] Attempting local Whisper AI transcription fallback...`);
+    // ✅ FIX: Calling the correct 'transcribeWithLocalWhisper' function.
+    const transcriptionResult = await transcribeWithLocalWhisper(audioPath, sourceLanguage);
+    
+    if (transcriptionResult && transcriptionResult.text) {
+      console.log(`[${jobId}] ✅ Transcription successful with Local Whisper.`);
+      const finalResult = await transliterateIfNecessary(transcriptionResult, sourceLanguage, jobId);
+      await saveTranscriptionResults(finalResult, transcriptionFile, jobId);
+      return finalResult; // This correctly returns the result and ends the function.
+    }
+  } catch (error) {
+    console.warn(`[${jobId}] Local Whisper AI fallback failed: ${error.message}. Falling back...`);
+  }
+  
+  // --- PRIORITY 3: GOOGLE SPEECH API ---
+  try {
+    console.log(`[${jobId}] Attempting Google Speech-to-Text API...`);
+    const transcriptionResult = await transcribeWithGoogleSpeech(audioPath, jobId, language, options);
+    
+    if (transcriptionResult && transcriptionResult.text) {
+      console.log(`[${jobId}] ✅ Google Speech API transcription successful.`);
+      await saveTranscriptionResults(transcriptionResult, transcriptionFile, jobId);
+      return transcriptionResult;
+    }
+  } catch (error) {
+    console.warn(`[${jobId}] Google Speech API failed: ${error.message}. Falling back...`);
+  }
+  
+  // --- FINAL FALLBACK: REAL AUDIO ANALYSIS ---
+  try {
+    console.log(`[${jobId}] All transcription models failed. Using real audio analysis fallback...`);
+    const transcriptionResult = await createRealAudioTranscription(audioPath, jobId, language);
+    await saveTranscriptionResults(transcriptionResult, transcriptionFile, jobId);
+    return transcriptionResult;
+  } catch (error) {
+    console.error(`[${jobId}] All transcription methods, including final fallback, have failed:`, error.message);
+    throw error; // This correctly rejects the promise and stops the pipeline.
+  }
 };
 
 

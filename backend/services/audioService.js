@@ -8,6 +8,7 @@ import path from 'path';
 import { exec } from 'child_process';
 import Upload from '../models/uploadModel.js';
 import { getFilePath } from '../utils/fileUtils.js';
+import { transcribeWithLocalWhisper } from './transcriptionService.js';
 import {
   detectAudioVideoSync,
   correctAudioSync,
@@ -236,6 +237,43 @@ const processAudioExtraction = async (video, jobId, resolve, reject) => {
 
 // In audioService.js
 // Replace the entire function with this new, simpler version.
+
+/**
+ * Performs forced alignment on a given audio file to get word-level timings.
+ * This is specifically for aligning the translated TTS audio.
+ * @param {string} audioPath The path to the translated audio file (.wav).
+ * @param {string} jobId The ID of the current job.
+ * @param {string} language The target language code (e.g., 'gu').
+ * @returns {Promise<object>} A promise that resolves to the alignment data object.
+ */
+//Varunnnnnnnnnn
+export const alignTranslatedAudio = async (audioPath, jobId, language) => {
+  console.log(`[${jobId}] Starting new alignment for translated audio: ${language}`);
+  if (!fs.existsSync(audioPath)) {
+    throw new Error(`Translated audio file not found for alignment: ${audioPath}`);
+  }
+
+  try {
+    // This assumes you are using a local Whisper model that provides word timings.
+    // The logic should be very similar to your initial transcription service.
+    const alignmentResult = await transcribeWithLocalWhisper(audioPath, language, true); // 'true' for word_timestamps
+
+    if (!alignmentResult || !alignmentResult.segments) {
+      throw new Error('Alignment of translated audio failed to return valid segments.');
+    }
+
+    console.log(`[${jobId}] ✅ Alignment of translated audio successful.`);
+    return {
+      forced_alignment_result: alignmentResult,
+      alignment_quality: 'excellent', // Assume excellent as it's from clean TTS
+    };
+  } catch (error) {
+    console.error(`[${jobId}] ❌ Alignment of translated audio failed:`, error);
+    throw new Error(`Failed to perform alignment on translated audio for job ${jobId}.`);
+  }
+};
+
+
 
 export const extractAudioForcedAlignment = async (transcription, audioPath, jobId) => {
   try {

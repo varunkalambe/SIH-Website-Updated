@@ -5,7 +5,7 @@ import path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { validateTranslationQuality } from './validationService.js';
-
+import { getConfig } from '../config/languageConfig.js';
 
 const execAsync = promisify(exec);
 
@@ -13,6 +13,14 @@ const execAsync = promisify(exec);
 export const generateCaptions = async (translation, jobId) => {
   return new Promise(async (resolve, reject) => {
     try {
+
+      console.log(`--- [${jobId}] CAPTION GENERATION VERIFICATION ---`);
+      console.log("1. Received translation object keys:", Object.keys(translation || {}));
+      console.log("2. Using language:", translation.language || translation.targetLang);
+      console.log("3. Using text (first 100 chars):", (translation.text || "NO TEXT PROVIDED").substring(0, 100));
+      console.log(`--- [${jobId}] END VERIFICATION ---`);
+
+
       console.log(`[${jobId}] Starting caption and transcript generation...`);
       
       // ===== VALIDATE INPUT =====
@@ -90,65 +98,66 @@ const targetLanguageName = translation.languagename || getLanguageName(targetLan
       console.log(`[${jobId}] Caption file: ${captionFilePath}`);
       console.log(`[${jobId}] SRT file: ${srtFilePath}`);
       console.log(`[${jobId}] Transcript file: ${transcriptFilePath}`);
+
+
+
+
       
-// ===== REGENERATE SEGMENT TIMING WITH PROPORTIONAL DISTRIBUTION =====
-console.log(`[${jobId}] 🔧 Creating segments with proportional timing...`);
+// ===== REGENERATE SEGMENT TIMING WITH LANGUAGE-AWARE CHUNKING =====
+console.log(`[${jobId}] 🔧 Creating segments with language-aware chunking...`);
 
 let timedSegments;
 
 if (translation.text && translation.text.trim().length > 0) {
   console.log(`[${jobId}] ✅ Creating segments from TRANSLATED text (${targetLanguageName})`);
   
-  // ✅ FIX #1: Universal sentence splitting (all languages)
-  const sentences = translation.text
-    .split(/[।.!?;|\u0964\u0965\u061F\u3002\u0589\u06D4\u2026]+/)
-    .map(s => s.trim())
-    .filter(s => s.length > 0);
+  // GET LANGUAGE CONFIG
+  const config = getConfig(targetLanguage);
+  console.log(`[${jobId}] Language config: ${config.name}, Max: ${config.maxWords} words/${config.maxChars} chars`);
   
-  console.log(`[${jobId}] Split into ${sentences.length} sentences`);
+  // CRITICAL FIX: Chunk text into 4-6 word segments using language-specific rules
+  const chunks = chunkText(translation.text, config);
+  console.log(`[${jobId}] ✅ Chunked into ${chunks.length} segments using ${config.name} rules`);
   
-  // Handle edge case: no sentences detected
-  if (sentences.length === 0) {
-    console.warn(`[${jobId}] ⚠️ No sentence delimiters found, using full text`);
-    sentences.push(translation.text.trim());
-  }
-  
-  // ✅ FIX #3: Proportional timing based on word count
-  // Calculate total words across all sentences
-  const sentenceWordCounts = sentences.map(s => s.split(/\s+/).length);
-  const totalWords = sentenceWordCounts.reduce((sum, count) => sum + count, 0);
+  // Calculate proportional timing based on word count
+  const chunkWordCounts = chunks.map(c => c.split(/\s+/).length);
+  const totalWords = chunkWordCounts.reduce((sum, count) => sum + count, 0);
   
   console.log(`[${jobId}] Total words: ${totalWords}, distributing ${captionDuration}s proportionally`);
   
   // Assign duration proportionally based on word count
   let currentTime = 0;
-  timedSegments = sentences.map((sentence, index) => {
-    const wordCount = sentenceWordCounts[index];
+  timedSegments = chunks.map((chunk, index) => {
+    const wordCount = chunkWordCounts[index];
     const proportion = wordCount / totalWords;
-    const duration = captionDuration * proportion;
+    const duration = Math.min(captionDuration * proportion, 6.0); // Max 6s per caption
     
     const segment = {
       id: index + 1,
       start: currentTime,
       end: Math.min(currentTime + duration, captionDuration),
-      text: sentence.trim(),
-      originaltext: translation.segments?.[index]?.text || sentence.trim(),
+      text: chunk.trim(),
+      originaltext: chunk.trim(),
       duration: duration,
       wordCount: wordCount,
       index: index + 1,
       timingRegenerated: true,
-      proportionalTiming: true
+      proportionalTiming: true,
+      languageAware: true
     };
     
     currentTime += duration;
     
-    console.log(`[${jobId}]   Segment ${index + 1}: ${wordCount} words → ${duration.toFixed(2)}s (${segment.start.toFixed(2)}-${segment.end.toFixed(2)}s)`);
+    if (index < 3) { // Log first 3 for verification
+      console.log(`[${jobId}]   Segment ${index + 1}: ${wordCount} words → ${duration.toFixed(2)}s (${segment.start.toFixed(2)}-${segment.end.toFixed(2)}s)`);
+      console.log(`[${jobId}]     Text: "${chunk.substring(0, 50)}${chunk.length > 50 ? '...' : ''}"`);
+    }
     
     return segment;
   });
   
-  console.log(`[${jobId}] ✅ Created ${timedSegments.length} segments with proportional timing`);
-} else {
+  console.log(`[${jobId}] ✅ Created ${timedSegments.length} segments with proportional timing (was ${translation.segments?.length || 0})`);
+  } else {
   console.warn(`[${jobId}] ⚠️ No translation text, using original segments`);
   timedSegments = await regenerateSegmentTiming(translation.segments, captionDuration, jobId);
 }
@@ -234,6 +243,103 @@ console.log(`[${jobId}] Step 1/3: Generating WebVTT captions...`);
     }
   });
 };
+
+
+export const generateAccurateCaptions = async (translatedWordAlignment, translatedText, jobId, targetLanguage) => {
+  console.log(`[${jobId}] 📝 GENERATING VTT CAPTIONS`);
+  
+  const config = getConfig(targetLanguage);
+  console.log(`[${jobId}] Language: ${config.name}, Max: ${config.maxWords} words/${config.maxChars} chars`);
+  
+  const text = translatedText.text || translatedText;
+  const segments = translatedWordAlignment?.segments || [];
+  
+  if (!text) {
+    throw new Error('Translated text is required for caption generation');
+  }
+  
+  console.log(`[${jobId}] Original text: ${text.length} chars, ${segments.length} segments`);
+  
+  const chunks = chunkText(text, config);
+  console.log(`[${jobId}] ✅ Chunked into ${chunks.length} captions (was ${segments.length})`);
+  
+  const startTime = segments[0]?.start || 0;
+  const endTime = segments[segments.length - 1]?.end || 30;
+  const totalDuration = endTime - startTime;
+  const durationPerChunk = Math.min(totalDuration / chunks.length, 6.0);
+  
+  const captions = [];
+  chunks.forEach((chunk, i) => {
+    const start = startTime + (i * durationPerChunk);
+    const end = Math.min(start + durationPerChunk, endTime);
+    captions.push({ start, end, text: chunk });
+  });
+  
+  let vtt = `WEBVTT\nKind: captions\nLanguage: ${targetLanguage}\n\n`;
+  captions.forEach((cap, i) => {
+    vtt += `${i + 1}\n${formatVTTTime(cap.start)} --> ${formatVTTTime(cap.end)}\n${cap.text}\n\n`;
+  });
+  
+  const captionsDir = './uploads/captions';
+  if (!fs.existsSync(captionsDir)) {
+    fs.mkdirSync(captionsDir, { recursive: true });
+  }
+  
+  const vttPath = path.join(captionsDir, `${jobId}_captions_accurate.vtt`);
+  fs.writeFileSync(vttPath, vtt, 'utf8');
+  
+  console.log(`[${jobId}] ✅ VTT saved: ${captions.length} captions, avg ${durationPerChunk.toFixed(2)}s each`);
+  return vttPath;
+};
+
+function chunkText(text, config) {
+  const chunks = [];
+  const sentences = text.split(config.delimiter);
+  
+  sentences.forEach((sentence) => {
+    sentence = sentence.trim();
+    if (!sentence || sentence.match(config.delimiter)) {
+      if (chunks.length > 0) chunks[chunks.length - 1] += sentence;
+      return;
+    }
+    
+    const words = sentence.split(/\s+/).filter(w => w.trim());
+    for (let i = 0; i < words.length; i += config.maxWords) {
+      let chunk = words.slice(i, i + config.maxWords).join(' ');
+      
+      while (chunk.length > config.maxChars) {
+        const subWords = chunk.split(/\s+/);
+        chunks.push(subWords.slice(0, Math.floor(subWords.length / 2)).join(' '));
+        chunk = subWords.slice(Math.floor(subWords.length / 2)).join(' ');
+      }
+      
+      if (chunk) chunks.push(chunk);
+    }
+  });
+  
+  return chunks.filter(c => c.trim());
+}
+
+
+
+/**
+ * ✅ Format seconds to VTT timestamp
+ */
+const formatVTTTime = (seconds) => {
+  if (typeof seconds !== 'number' || isNaN(seconds)) {
+    console.warn(`Invalid time value: ${seconds}, using 0`);
+    seconds = 0;
+  }
+  
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = Math.floor(seconds % 60);
+  const ms = Math.floor((seconds % 1) * 1000);
+  
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
+};
+
+
 
 // ===== REGENERATE SEGMENT TIMING =====
 const regenerateSegmentTiming = async (segments, totalDuration, jobId) => {
@@ -800,6 +906,7 @@ export const generateWordLevelCaptions = async (segments, jobId) => {
 // ===== EXPORT ALL FUNCTIONS =====
 export default {
   generateCaptions,
+  generateAccurateCaptions,  // <-- ADD THIS LINE
   generateWebVTT: generateWebVTT,
   generateSRT,
   generatePlainTextTranscript,
